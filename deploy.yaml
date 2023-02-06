@@ -18,7 +18,7 @@ spec:
       automountServiceAccountToken: true
       serviceAccount: leaderelection-sa
       containers:
-      - image: docker.io/wstcliyu/leaderelection:retry-run
+      - image: docker.io/wstcliyu/leaderelection:subctx
         name: leaderelection
         args:
           - --lease-num=10
