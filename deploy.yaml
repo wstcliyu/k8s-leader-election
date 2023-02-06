@@ -18,10 +18,10 @@ spec:
       automountServiceAccountToken: true
       serviceAccount: leaderelection-sa
       containers:
-      - image: docker.io/mayankshah1607/leaderelection
+      - image: docker.io/wstcliyu/leaderelection:retry-run
         name: leaderelection
         args:
-          - --lease-name=my-lease
+          - --lease-num=10
         env:
           - name: POD_NAME
             valueFrom:

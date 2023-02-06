@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/wstcliyu/k8s-leader-election/priorityleaderelection"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog"
 )
@@ -18,7 +23,20 @@ var (
 	client *clientset.Clientset
 )
 
-func getNewLock(lockname, podname, namespace string) *resourcelock.LeaseLock {
+func getId(lockname, podname string) string {
+	h := sha256.New()
+	h.Write([]byte(lockname))
+	h.Write([]byte(podname))
+	bs := h.Sum(nil)
+	parts := []string{
+		fmt.Sprintf("%x", bs),
+		podname,
+		lockname,
+	}
+	return strings.Join(parts, "/")
+}
+
+func getNewLock(lockname, namespace, podname string) *resourcelock.LeaseLock {
 	return &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
 			Name:      lockname,
@@ -26,38 +44,33 @@ func getNewLock(lockname, podname, namespace string) *resourcelock.LeaseLock {
 		},
 		Client: client.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: podname,
+			Identity: getId(lockname, podname),
 		},
 	}
 }
 
-func doStuff() {
-	for {
-		klog.Info("doing stuff...")
-		time.Sleep(5 * time.Second)
-	}
-}
-
-func runLeaderElection(lock *resourcelock.LeaseLock, ctx context.Context, id string) {
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+func runLeaderElection(ctx context.Context, lock *resourcelock.LeaseLock, tm *TenantManager, timeout time.Duration) {
+	priorityleaderelection.RunPriorityLeaderElection(ctx, timeout, priorityleaderelection.LeaderElectionConfig{
 		Lock:            lock,
 		ReleaseOnCancel: true,
 		LeaseDuration:   15 * time.Second,
 		RenewDeadline:   10 * time.Second,
 		RetryPeriod:     2 * time.Second,
-		Callbacks: leaderelection.LeaderCallbacks{
+		Callbacks: priorityleaderelection.LeaderCallbacks{
 			OnStartedLeading: func(c context.Context) {
-				doStuff()
+				klog.Infof("For %s, start leading!", lock.LeaseMeta.Name)
+				tm.AddTenant(lock.LeaseMeta.Name)
 			},
 			OnStoppedLeading: func() {
-				klog.Info("no longer the leader, staying inactive.")
+				klog.Infof("For %s, no longer the leader, staying inactive.", lock.LeaseMeta.Name)
+				tm.RemoveTenant(lock.LeaseMeta.Name)
 			},
 			OnNewLeader: func(current_id string) {
-				if current_id == id {
-					klog.Info("still the leader!")
+				if current_id == lock.LockConfig.Identity {
+					klog.Infof("For %s, still the leader!", lock.LeaseMeta.Name)
 					return
 				}
-				klog.Info("new leader is %s", current_id)
+				klog.Infof("For %s, new leader is %s", lock.LeaseMeta.Name, current_id)
 			},
 		},
 	})
@@ -66,30 +79,35 @@ func runLeaderElection(lock *resourcelock.LeaseLock, ctx context.Context, id str
 func main() {
 	var (
 		leaseLockName      string
-		leaseLockNamespace string
+		leaseLockNamespace = "default"
 		podName            = os.Getenv("POD_NAME")
+		leaseLockNum       string
 	)
-	flag.StringVar(&leaseLockName, "lease-name", "", "Name of lease lock")
-	flag.StringVar(&leaseLockNamespace, "lease-namespace", "default", "Name of lease lock namespace")
+	flag.StringVar(&leaseLockNum, "lease-num", "", "Number of lease lock")
 	flag.Parse()
 
-	if leaseLockName == "" {
-		klog.Fatal("missing lease-name flag")
-	}
-	if leaseLockNamespace == "" {
-		klog.Fatal("missing lease-namespace flag")
+	tenantNum, err := strconv.Atoi(leaseLockNum)
+	if err != nil {
+		klog.Fatalf("failed to convert leaseLockNum to int")
 	}
 
 	config, err := rest.InClusterConfig()
-	client = clientset.NewForConfigOrDie(config)
-
 	if err != nil {
 		klog.Fatalf("failed to get kubeconfig")
 	}
+	client, err = clientset.NewForConfig(config)
+	if err != nil {
+		klog.Fatalf("failed to get kubeclient")
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 20 * time.Minute)
 	defer cancel()
 
-	lock := getNewLock(leaseLockName, podName, leaseLockNamespace)
-	runLeaderElection(lock, ctx, podName)
+	tm := NewTenantManager()
+	for i := 0; i < tenantNum; i++ {
+		leaseLockName = "leaselock-" + strconv.Itoa(i)
+		lock := getNewLock(leaseLockName, leaseLockNamespace, podName)
+		go runLeaderElection(ctx, lock, tm, time.Minute)
+	}
+	wait.UntilWithContext(ctx, tm.PrintTenants, 20 * time.Second)
 }

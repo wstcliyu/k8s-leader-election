@@ -50,7 +50,7 @@ limitations under the License.
 // DISCLAIMER: this is an alpha API. This library will likely change significantly
 // or even be removed entirely in subsequent releases. Depend on this API at
 // your own risk.
-package leaderelection
+package priorityleaderelection
 
 import (
 	"bytes"
@@ -223,6 +223,23 @@ func RunOrDie(ctx context.Context, lec LeaderElectionConfig) {
 	le.Run(ctx)
 }
 
+// RunPriorityLeaderElection retries the priority election loop after renew failure and OnStoppedLeading
+func RunPriorityLeaderElection(ctx context.Context, timeout time.Duration, lec LeaderElectionConfig) {
+	le, err := NewLeaderElector(lec)
+	if err != nil {
+		panic(err)
+	}
+	if lec.WatchDog != nil {
+		lec.WatchDog.SetLeaderElection(le)
+	}
+
+	wait.Until(func() {
+		klog.Info("starting le.Run()")
+		subctx, _ := context.WithTimeout(ctx, timeout)
+		le.Run(subctx)
+	}, le.config.RetryPeriod, ctx.Done())
+}
+
 // GetLeader returns the identity of the last observed leader or returns the empty string if
 // no leader has yet been observed.
 // This function is for informational purposes. (e.g. monitoring, logs, etc.)
@@ -247,7 +264,7 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 		succeeded = le.tryAcquireOrRenew(ctx)
 		le.maybeReportTransition()
 		if !succeeded {
-			klog.V(4).Infof("failed to acquire lease %v", desc)
+			klog.Infof("failed to acquire lease %v", desc)
 			return
 		}
 		le.config.Lock.RecordEvent("became leader")
@@ -345,8 +362,10 @@ func (le *LeaderElector) tryAcquireOrRenew(ctx context.Context) bool {
 	}
 	if len(oldLeaderElectionRecord.HolderIdentity) > 0 &&
 		le.observedTime.Add(le.config.LeaseDuration).After(now.Time) &&
-		!le.IsLeader() {
-		klog.V(4).Infof("lock is held by %v and has not yet expired", oldLeaderElectionRecord.HolderIdentity)
+		!le.IsLeader() && 
+		!le.hasHigherPriority() &&
+		time.Time(oldLeaderElectionRecord.RenewTime.Time).Add(le.config.LeaseDuration).After(now.Time) {
+		klog.Infof("lock is held by %v and has not yet expired", oldLeaderElectionRecord.HolderIdentity)
 		return false
 	}
 
@@ -413,3 +432,8 @@ func (le *LeaderElector) getObservedRecord() rl.LeaderElectionRecord {
 
 	return le.observedRecord
 }
+
+func (le *LeaderElector) hasHigherPriority() bool {
+	return le.config.Lock.Identity() > le.observedRecord.HolderIdentity
+}
+

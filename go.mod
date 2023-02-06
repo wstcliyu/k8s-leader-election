@@ -1,4 +1,4 @@
-module github.com/mayankshah1607/k8s-leader-election
+module github.com/wstcliyu/k8s-leader-election
 
 go 1.16
 
