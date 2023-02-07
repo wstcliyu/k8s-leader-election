@@ -154,6 +154,13 @@ type LeaderElectionConfig struct {
 
 	// Name is the name of the resource lock for debugging
 	Name string
+
+	// RunTimeout is the timeout for one loop of leader election
+	RunTimeout time.Duration
+	// StartTimestamp is timestamp when leader election is called
+	StartTimestamp time.Time
+	// Probation is the period a candidate must wait before trying to acquire or renew the lock
+	Probation time.Duration
 }
 
 // LeaderCallbacks are callbacks that are triggered during certain
@@ -224,7 +231,7 @@ func RunOrDie(ctx context.Context, lec LeaderElectionConfig) {
 }
 
 // RunPriorityLeaderElection retries the priority election loop after renew failure and OnStoppedLeading
-func RunPriorityLeaderElection(ctx context.Context, timeout time.Duration, lec LeaderElectionConfig) {
+func RunPriorityLeaderElection(ctx context.Context, lec LeaderElectionConfig) {
 	le, err := NewLeaderElector(lec)
 	if err != nil {
 		panic(err)
@@ -235,7 +242,7 @@ func RunPriorityLeaderElection(ctx context.Context, timeout time.Duration, lec L
 
 	wait.Until(func() {
 		klog.Info("starting le.Run()")
-		subctx, _ := context.WithTimeout(ctx, timeout)
+		subctx, _ := context.WithTimeout(ctx, lec.RunTimeout)
 		le.Run(subctx)
 	}, le.config.RetryPeriod, ctx.Done())
 }
@@ -366,6 +373,11 @@ func (le *LeaderElector) tryAcquireOrRenew(ctx context.Context) bool {
 		!le.hasHigherPriority() &&
 		time.Time(oldLeaderElectionRecord.RenewTime.Time).Add(le.config.LeaseDuration).After(now.Time) {
 		klog.Infof("lock is held by %v and has not yet expired", oldLeaderElectionRecord.HolderIdentity)
+		return false
+	}
+
+	if le.config.StartTimestamp.Add(le.config.Probation).After(now.Time) {
+		klog.Info("still in the period of probation...")
 		return false
 	}
 
