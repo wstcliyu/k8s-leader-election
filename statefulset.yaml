@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  creationTimestamp: null
+  labels:
+    app: leaderelection
+  name: leaderelection
+spec:
+  serviceName: "leaderelection"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: leaderelection
+  template:
+    metadata:
+      labels:
+        app: leaderelection
+    spec:
+      automountServiceAccountToken: true
+      serviceAccount: leaderelection-sa
+      containers:
+      - image: docker.io/wstcliyu/leaderelection:subctx
+        name: leaderelection
+        args:
+          - --lease-num=10
+        env:
+          - name: POD_NAME
+            valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.name
